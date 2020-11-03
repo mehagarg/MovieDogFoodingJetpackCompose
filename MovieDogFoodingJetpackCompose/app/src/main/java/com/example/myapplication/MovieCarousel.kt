@@ -14,6 +14,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.ui.*
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawOpacity
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.gesture.scrollorientationlocking.Orientation
 import androidx.compose.ui.graphics.*
@@ -29,6 +30,8 @@ import androidx.compose.ui.unit.sp
 import com.example.myapplication.model.Movie
 import com.example.myapplication.model.movies
 import dev.chrisbanes.accompanist.coil.CoilImage
+import java.lang.Math.abs
+import kotlin.math.roundToInt
 
 val posterAspectRatio = 0.647f
 
@@ -37,12 +40,16 @@ fun Screen() {
     val configuration = ConfigurationAmbient.current
     val density = DensityAmbient.current
     val screenWidth = configuration.screenWidthDp.dp
+    val screenWidthPx = with(density) {screenWidth.toPx()}
     val screenHeight = configuration.screenHeightDp.dp
+    val screenHeightPx = with(density) {screenHeight.toPx()}
     val offset = remember { mutableStateOf(0f) }
     val ctrlr = rememberScrollableController {
         offset.value += it
         it
     }
+    val indexFraction = -1 * offset.value /screenWidthPx
+
     Stack(
         Modifier
             .background(Color.Black)
@@ -53,10 +60,11 @@ fun Screen() {
             )
     ) {
         movies.forEachIndexed { index, movie ->
-            val indexFraction =
+            val opacity = if(indexFraction.roundToInt() == index) 1f else 0f
             CoilImage(
                 data = movie.bgUrl,
                 modifier = Modifier
+                    .drawOpacity(opacity)
                     .fillMaxWidth()
                     .aspectRatio(posterAspectRatio)
             )
@@ -67,18 +75,23 @@ fun Screen() {
                 .verticalGradient(
                     0f to Color.Transparent,
                     0.3f to Color.White,
-                    0f to Color.White
+                    1f to Color.White
                 )
                 .fillMaxWidth()
                 .fillMaxHeight(0.6f)
         )
         movies.forEachIndexed { index, movie ->
-            MoviePoster(movie = movie,
-                modifier = Modifier.offset(
-                    getX = { screenWidth * index + offset.value.dp },
-                    getY = { 0.dp }
-                ).width(screenWidth * .75f)
-                    .gravity(Alignment.BottomCenter))
+            val center = screenWidthPx * index
+            val distanceFromCenter = abs(offset.value - center) / screenWidthPx
+            MoviePoster(
+                movie = movie,
+                modifier = Modifier
+                    .offset(
+                        getX = { center + offset.value },
+                        getY = { lerp(0f, -50f, distanceFromCenter) })
+                    .width(screenWidth * .75f)
+                    .gravity(Alignment.BottomCenter)
+            )
         }
 //        Spacer(Modifier.height(30.dp))
 //        BuyTicketButton(onClick = {})
@@ -100,9 +113,10 @@ fun Modifier.verticalGradient(vararg colors: ColorStop) = this then object : Dra
         var brush = lastBrush
         if (size != lastSize || brush == null) {
             brush = VerticalGradient(
-                *colors.map{it.first * size.height to it.second}.toTypedArray(),
+                *colors/*.map{it.first * size.height to it.second}.toTypedArray()*/,
                 startY = 0f,
-                endY = size.height)
+                endY = size.height
+            )
             lastSize = size
             lastBrush = brush
         }
@@ -121,8 +135,8 @@ fun Modifier.verticalGradient(vararg colors: ColorStop) = this then object : Dra
 }
 
 fun Modifier.offset(
-    getX: () -> Dp,
-    getY: () -> Dp,
+    getX: () -> Float,
+    getY: () -> Float,
     rtlAware: Boolean = true
 ) = this then object : LayoutModifier {
     override fun MeasureScope.measure(
@@ -132,9 +146,9 @@ fun Modifier.offset(
         val placeable = measurable.measure(constraints)
         return layout(placeable.width, placeable.height) {
             if (rtlAware) {
-                placeable.placeRelative(getX().toIntPx(), getY().toIntPx())
+                placeable.placeRelative(getX().roundToInt(), getY().roundToInt())
             } else {
-                placeable.place(getX().toIntPx(), getY().toIntPx())
+                placeable.place(getX().roundToInt(), getY().roundToInt())
             }
         }
     }
