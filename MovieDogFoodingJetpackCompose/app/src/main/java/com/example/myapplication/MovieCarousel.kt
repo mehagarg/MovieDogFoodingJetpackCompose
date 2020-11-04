@@ -1,10 +1,13 @@
 package com.example.myapplication
 
-import androidx.annotation.FloatRange
+import androidx.compose.animation.asDisposableClock
+import androidx.compose.animation.core.TargetAnimation
 import androidx.compose.foundation.Text
+import androidx.compose.foundation.animation.FlingConfig
+import androidx.compose.foundation.animation.defaultFlingConfig
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.gestures.rememberScrollableController
+import androidx.compose.foundation.gestures.ScrollableController
 import androidx.compose.foundation.gestures.scrollable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -14,17 +17,14 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.ui.*
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.drawOpacity
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.gesture.scrollorientationlocking.Orientation
 import androidx.compose.ui.graphics.*
 import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.platform.ConfigurationAmbient
-import androidx.compose.ui.platform.DensityAmbient
-import androidx.compose.ui.platform.InspectableParameter
-import androidx.compose.ui.platform.ParameterElement
+import androidx.compose.ui.platform.*
 import androidx.compose.ui.unit.Constraints
-import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.myapplication.model.Movie
@@ -40,15 +40,39 @@ fun Screen() {
     val configuration = ConfigurationAmbient.current
     val density = DensityAmbient.current
     val screenWidth = configuration.screenWidthDp.dp
-    val screenWidthPx = with(density) {screenWidth.toPx()}
+    val screenWidthPx = with(density) { screenWidth.toPx() }
     val screenHeight = configuration.screenHeightDp.dp
-    val screenHeightPx = with(density) {screenHeight.toPx()}
+    val screenHeightPx = with(density) { screenHeight.toPx() }
     val offset = remember { mutableStateOf(0f) }
-    val ctrlr = rememberScrollableController {
-        offset.value += it
-        it
+    val posterWidthDp = screenWidth * 0.6f
+    val posterSpacingPx =
+        with(density) { posterWidthDp.toPx() + 20.dp.toPx() } /*screenWidthPx * 0.8f*/
+    val indexFraction = -1 * offset.value / posterSpacingPx
+    val flingConfig = defaultFlingConfig {
+        TargetAnimation((it / posterSpacingPx).roundToInt() * posterSpacingPx)
     }
-    val indexFraction = -1 * offset.value /screenWidthPx
+    val upperBound = 0f
+    val lowerBound = -1 * (movies.size - 1) * posterSpacingPx
+    val ctrlr = rememberScrollableController(flingConfig = flingConfig) {
+        // Stop consuming the fling when pass the bounds
+        val target = offset.value + it
+        when {
+            target > upperBound -> {
+                val consumed = upperBound - offset.value
+                offset.value = upperBound
+                consumed
+            }
+            target < lowerBound -> {
+                val consumed = lowerBound - offset.value
+                offset.value = lowerBound
+                consumed
+            }
+            else -> {
+                offset.value = target
+                it
+            }//return pixels consumes
+        }
+    }
 
     Stack(
         Modifier
@@ -60,11 +84,31 @@ fun Screen() {
             )
     ) {
         movies.forEachIndexed { index, movie ->
-            val opacity = if(indexFraction.roundToInt() == index) 1f else 0f
+            val isInRange = (index >= indexFraction - 1 && indexFraction + 1 > index)
+            val opacity = if (isInRange) 1f else 0f
+            // 1.5 -> 1, 2
+            val shape = when {
+                !isInRange -> RectangleShape
+                // index - 0, if = 0.25, 1f
+                // index - 1, if = 0.25 -> 0f, 0.25
+                index <= indexFraction -> {
+                    val fraction = indexFraction - index
+                    FractionalRectangleShape(fraction.coerceIn(0f, 1f - Float.MIN_VALUE), 1f)
+                }
+                else -> {
+                    val fraction = indexFraction - index + 1
+                    FractionalRectangleShape(0f, fraction.coerceIn(Float.MIN_VALUE, 1f))
+                }
+            }
             CoilImage(
                 data = movie.bgUrl,
                 modifier = Modifier
-                    .drawOpacity(opacity)
+//                    .clipToBounds()
+                    .drawLayer(
+                        alpha = opacity,
+                        shape = shape,
+                        clip = true
+                    )
                     .fillMaxWidth()
                     .aspectRatio(posterAspectRatio)
             )
@@ -81,15 +125,15 @@ fun Screen() {
                 .fillMaxHeight(0.6f)
         )
         movies.forEachIndexed { index, movie ->
-            val center = screenWidthPx * index
-            val distanceFromCenter = abs(offset.value - center) / screenWidthPx
+            val center = posterSpacingPx * index
+            val distanceFromCenter = abs(offset.value + center) / posterSpacingPx
             MoviePoster(
                 movie = movie,
                 modifier = Modifier
                     .offset(
                         getX = { center + offset.value },
-                        getY = { lerp(0f, -50f, distanceFromCenter) })
-                    .width(screenWidth * .75f)
+                        getY = { lerp(0f, 50f, distanceFromCenter) })
+                    .width(posterWidthDp)
                     .gravity(Alignment.BottomCenter)
             )
         }
@@ -98,41 +142,69 @@ fun Screen() {
     }
 }
 
-fun Modifier.verticalGradient(vararg colors: ColorStop) = this then object : DrawModifier, InspectableParameter {
-
-    // naive cache outline calculation if size is the same
-    private var lastSize: Size? = null
-    private var lastBrush: Brush? = null
-
-    override fun ContentDrawScope.draw() {
-        drawRect()
-        drawContent()
+@Composable
+fun rememberScrollableController(
+    flingConfig: FlingConfig = defaultFlingConfig(),
+    consumeScrollDelta: (Float) -> Float
+): ScrollableController {
+    val clocks = AnimationClockAmbient.current.asDisposableClock()
+    return remember(clocks, flingConfig) {
+        ScrollableController(consumeScrollDelta, flingConfig, clocks)
     }
+}
 
-    private fun ContentDrawScope.drawRect() {
-        var brush = lastBrush
-        if (size != lastSize || brush == null) {
-            brush = VerticalGradient(
-                *colors/*.map{it.first * size.height to it.second}.toTypedArray()*/,
-                startY = 0f,
-                endY = size.height
+fun FractionalRectangleShape(startFraction: Float, endFraction: Float) = object : Shape {
+    override fun createOutline(size: Size, density: Density) =
+        Outline.Rectangle(
+            Rect(
+                top = 0f,
+                left = startFraction * size.width,
+                bottom = size.height,
+                right = endFraction * size.width
             )
-            lastSize = size
-            lastBrush = brush
-        }
-        drawRect(brush = brush, alpha = 1f)
-    }
-
-    override val nameFallback = "verticalGradient"
-
-    override val valueOverride: Any?
-        get() = colors
-
-    override val inspectableElements: Sequence<ParameterElement>
-        get() = sequenceOf(
-            ParameterElement("color", colors)
         )
 }
+
+fun lerp(start: Float, stop: Float, fraction: Float): Float {
+    return (1 - fraction) * start + fraction * stop
+}
+
+fun Modifier.verticalGradient(vararg colors: ColorStop) =
+    this then object : DrawModifier, InspectableParameter {
+
+        // naive cache outline calculation if size is the same
+        private var lastSize: Size? = null
+        private var lastBrush: Brush? = null
+
+        override fun ContentDrawScope.draw() {
+            drawRect()
+            drawContent()
+        }
+
+        private fun ContentDrawScope.drawRect() {
+            var brush = lastBrush
+            if (size != lastSize || brush == null) {
+                brush = VerticalGradient(
+                    *colors/*.map{it.first * size.height to it.second}.toTypedArray()*/,
+                    startY = 0f,
+                    endY = size.height
+                )
+                lastSize = size
+                lastBrush = brush
+            }
+            drawRect(brush = brush, alpha = 1f)
+        }
+
+        override val nameFallback = "verticalGradient"
+
+        override val valueOverride: Any?
+            get() = colors
+
+        override val inspectableElements: Sequence<ParameterElement>
+            get() = sequenceOf(
+                ParameterElement("color", colors)
+            )
+    }
 
 fun Modifier.offset(
     getX: () -> Float,
