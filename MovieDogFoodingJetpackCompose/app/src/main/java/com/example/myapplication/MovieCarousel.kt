@@ -1,10 +1,8 @@
 package com.example.myapplication
 
-import androidx.compose.animation.animatedFloat
-import androidx.compose.animation.asDisposableClock
-import androidx.compose.animation.core.AnimatedFloat
-import androidx.compose.animation.core.AnimationClockObservable
-import androidx.compose.animation.core.TargetAnimation
+import androidx.compose.animation.*
+import androidx.compose.animation.core.*
+import androidx.compose.foundation.ScrollableRow
 import androidx.compose.foundation.Text
 import androidx.compose.foundation.animation.AndroidFlingDecaySpec
 import androidx.compose.foundation.animation.FlingConfig
@@ -15,8 +13,9 @@ import androidx.compose.foundation.gestures.scrollable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.Button
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.remember
+import androidx.compose.material.MaterialTheme
+import androidx.compose.runtime.*
+import androidx.compose.runtime.snapshots.snapshotFlow
 import androidx.compose.ui.*
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Rect
@@ -27,8 +26,13 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.*
 import androidx.compose.ui.unit.*
 import com.example.myapplication.model.Movie
+import com.example.myapplication.model.MovieActor
 import com.example.myapplication.model.movies
 import dev.chrisbanes.accompanist.coil.CoilImage
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.launchIn
+import kotlinx.coroutines.flow.onEach
 import java.lang.Math.abs
 import kotlin.math.ceil
 import kotlin.math.floor
@@ -55,7 +59,9 @@ fun Screen() {
         { movie, expanded ->
             MoviePoster(
                 movie = movie,
-                modifier = Modifier.width(posterWidthDp)
+                expanded = expanded,
+                expandedWidth = screenWidth,
+                normalWidth = posterWidthDp
             )
         }
         BuyTicketButton(
@@ -64,7 +70,6 @@ fun Screen() {
                 .width(posterWidthDp)
                 .padding(20.dp),
             onClick = {
-                // Navigate to the page for that movie
                 carouselState.expandSelectedItem()
             }
         )
@@ -104,10 +109,12 @@ class CarouselState(
     internal val expanded: AnimatedFloat,
     clock: AnimationClockObservable
 ) {
-
-    val flingConfig = FlingConfig(AndroidFlingDecaySpec(density)) { adjustTarget(it) }
+    private val flingConfig = FlingConfig(AndroidFlingDecaySpec(density)) { adjustTarget(it) }
     val scrollableController =
         ScrollableController({ this.consumeScrollDelta(it) }, flingConfig, clock)
+
+    var expandedIndex by mutableStateOf<Int?>(null)
+        private set
     private var itemCount: Int = 0
     var spacingPx: Float = 0f
     fun update(count: Int, spacing: Dp) {
@@ -115,13 +122,16 @@ class CarouselState(
         spacingPx = with(density) { spacing.toPx() }
     }
 
-    val upperBound: Float get() = 0f
-    val lowerBound: Float get() = -1 * (itemCount - 1) * spacingPx
-    fun adjustTarget(target: Float): TargetAnimation? {
+    private val upperBound: Float get() = 0f
+    private val lowerBound: Float get() = -1 * (itemCount - 1) * spacingPx
+    private fun adjustTarget(target: Float): TargetAnimation? {
         return TargetAnimation((target / spacingPx).roundToInt() * spacingPx)
     }
 
-    fun consumeScrollDelta(delta: Float): Float {
+    private fun consumeScrollDelta(delta: Float): Float {
+        if (expandedIndex != null) {
+            return 0f
+        }
         var target = animatedOffset.value + delta
         var consumed = delta
         when {
@@ -140,10 +150,18 @@ class CarouselState(
     }
 
     fun expandSelectedItem() {
-        if (expanded.value == 1f) {
-            expanded.animateTo(0f)
+        if (expandedIndex != null) {
+            expandedIndex = null
+            expanded.animateTo(0f, SpringSpec(stiffness = Spring.StiffnessLow))
+
         } else {
-            expanded.animateTo(1f)
+            expandedIndex = selectedIndex
+            expanded.animateTo(
+                1f, SpringSpec(
+                    stiffness = Spring.StiffnessLow,
+                    dampingRatio = Spring.DampingRatioLowBouncy
+                )
+            )
         }
     }
 
@@ -157,7 +175,7 @@ fun <T> Carousel(
     carouselState: CarouselState,
     getBackgroundImage: (T) -> Any,
     getForegroundImage: (T) -> Any,
-    foregroundContent: @Composable (item: T, expanded: Float) -> Unit
+    foregroundContent: @Composable (item: T, expanded: Boolean) -> Unit
 ) {
     // TODO: think more about this
     carouselState.update(items.size, spacing)
@@ -165,7 +183,7 @@ fun <T> Carousel(
     val spacingPx = carouselState.spacingPx
     val animatedOffset = carouselState.animatedOffset
     val expanded = carouselState.expanded
-    Stack(
+    Box(
         Modifier
             .background(Color.Black)
             .fillMaxSize()
@@ -181,27 +199,45 @@ fun <T> Carousel(
                     .carouselBackground(
                         index = index,
                         getIndexFraction = { -1 * animatedOffset.value / spacingPx },
-                        getExpandedFraction = { expanded.value }
+                        getExpandedFraction = { carouselState.expanded.value }
                     )
                     .fillMaxWidth()
                     .aspectRatio(posterAspectRatio)
             )
+            if (index != carouselState.expandedIndex) {
+                CoilImage(
+                    data = getForegroundImage(item),
+                    modifier = Modifier
+                        .carouselExpandedBackground(
+                            index = index,
+                            getIndexFraction = { -1 * animatedOffset.value / spacingPx },
+                            getExpandedFraction = { carouselState.expanded.value }
+                        )
+                        .offset(getX = {
+                            (index - carouselState.selectedIndex) * 0.75f * spacingPx
+                        }, getY = { 0f })
+                        .align(Alignment.BottomCenter)
+                        .width(spacing)
+                        .aspectRatio(posterAspectRatio)
+                )
+            }
+        }
+        carouselState.expandedIndex?.let {
             CoilImage(
-                data = getForegroundImage(item),
+                data = getForegroundImage(items[it]),
                 modifier = Modifier
                     .carouselExpandedBackground(
-                        index = index,
+                        index = it,
                         getIndexFraction = { -1 * animatedOffset.value / spacingPx },
-                        getExpandedFraction = { expanded.value }
+                        getExpandedFraction = { carouselState.expanded.value }
                     )
-                    .offset(getX = {
-                        (index - carouselState.selectedIndex) * 0.75f * spacingPx
-                    }, getY = { 0f })
+                    .offset(getX = { 0f }, getY = { 0f })
                     .align(Alignment.BottomCenter)
                     .width(spacing)
                     .aspectRatio(posterAspectRatio)
             )
         }
+
         Spacer(
             modifier = Modifier
                 .align(Alignment.BottomEnd)
@@ -217,23 +253,27 @@ fun <T> Carousel(
             val center = spacingPx * index
             Column(
                 Modifier
+                    .zIndex(if(carouselState.expandedIndex == index) 1f else 0f)
                     .offset(
                         getX = {
                             center + animatedOffset.value
                         },
                         getY = {
-                            val distanceFromCenter = abs(animatedOffset.value + center) / spacingPx
+                            val distanceFromCenter =
+                                abs(animatedOffset.value + center) / spacingPx
                             lerp(0f, 50f, distanceFromCenter)
                         }
                     )
                     .align(Alignment.BottomCenter)
             ) {
-                foregroundContent(item, 0f)
-//                onSelectedIndexChange(index) // me added
+                foregroundContent(item, carouselState.expandedIndex == index)
             }
         }
     }
 }
+
+@Composable
+fun Scope(content: @Composable () -> Unit) = content()
 
 fun Modifier.carouselExpandedBackground(
     index: Int,
@@ -364,20 +404,64 @@ fun Modifier.offset(
     }
 }
 
+@ExperimentalComposeApi
+fun AnimatedFloat.tracks(other: AnimatedFloat, scope: CoroutineScope) {
+    snapshotFlow { other.value }
+        .onEach {
+            animateTo(it)
+        }.launchIn(scope)
+}
+
+val imageWidthKey = FloatPropKey()
+val imageScale = FloatPropKey()
+val posterTransition = transitionDefinition<Boolean> {
+
+}
+
+@OptIn(ExperimentalComposeApi::class)
 @Composable
-private fun MoviePoster(movie: Movie, modifier: Modifier = Modifier) {
+private fun MoviePoster(
+    movie: Movie,
+    expanded: Boolean,
+    expandedWidth: Dp,
+    normalWidth: Dp,
+    modifier: Modifier = Modifier
+) {
+    val posterPadding = 20.dp
+    val fullImageWidth = normalWidth - 2 * posterPadding
+    val t = animatedFloat(if (expanded) 1f else 0f)
+    onCommit(expanded){
+        t.animateTo(if(expanded) 1f else 0f)
+    }
+    val t2 = animatedFloat(0f)
+    val scope = rememberCoroutineScope()
+    onActive {
+        t2.tracks(t, scope)
+    }
+    val imageScale = lerp(1f, 0f, t.value)
+    val imageAlpha = lerp(1f, 0f, t.value)
+    val imageWidth = lerp(fullImageWidth.value, 0f, t2.value)
     Column(
-        modifier
+        modifier = modifier
+            .width(if (expanded) expandedWidth else normalWidth)
+            .padding(top = 200.dp)
             .clip(RoundedCornerShape(20.dp))
             .background(Color.White)
-            .padding(20.dp)
-            .padding(bottom = 60.dp)
+            .padding(posterPadding)
+            .padding(bottom = 60.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
     ) {
         CoilImage(
             data = movie.posterUrl,
             contentScale = ContentScale.Crop,
             modifier = Modifier
-                .fillMaxWidth()
+                // scale the image, participation in layout system will remain the same.
+                .drawLayer(
+                    scaleX = imageScale,
+                    scaleY = imageScale,
+                    alpha = imageAlpha
+                )
+                .width(imageWidth.dp)
                 .aspectRatio(posterAspectRatio)
                 .clip(RoundedCornerShape(10.dp))
         )
@@ -394,6 +478,34 @@ private fun MoviePoster(movie: Movie, modifier: Modifier = Modifier) {
             }
         }
         StarRating(9.0f)
+//        if (expanded) {
+//            Column(
+//                modifier = Modifier.drawLayer(
+////                alpha = t[bodyAlpha],
+////                translationY = t[]
+//                )
+//            ) {
+//                Text(
+//                    "Actors",
+//                    style = MaterialTheme.typography.body1,
+//                    modifier = Modifier.padding(bottom = 16.dp)
+//                )
+//                ScrollableRow {
+//                    movie.actors.forEach {
+//                        Actor(actor = it)
+//                    }
+//                }
+//                Text(
+//                    "Introduction",
+//                    style = MaterialTheme.typography.body1,
+//                    modifier = Modifier.padding(top = 16.dp, bottom = 16.dp)
+//                )
+//                Text(movie.introduction, style = MaterialTheme.typography.body2)
+//                Text(movie.introduction, style = MaterialTheme.typography.body2)
+//                Text(movie.introduction, style = MaterialTheme.typography.body2)
+//                Text(movie.introduction, style = MaterialTheme.typography.body2)
+//            }
+//        }
     }
 }
 
@@ -425,4 +537,17 @@ fun Chip(label: String, modifier: Modifier = Modifier) {
             .border(1.dp, Color.Gray, RoundedCornerShape(50))
             .padding(horizontal = 10.dp, vertical = 2.dp)
     )
+}
+
+@Composable
+fun Actor(actor: MovieActor) {
+    Column {
+        CoilImage(
+            data = actor.image,
+            modifier = Modifier.padding(end = 20.dp)
+                .size(138.dp, 175.dp)
+                .clip(RoundedCornerShape(4.dp))
+        )
+        Text(text = actor.name)
+    }
 }
